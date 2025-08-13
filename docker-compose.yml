@@ -131,8 +131,9 @@ services:
     build:
       context: ./zabbix-mcp-server
       dockerfile: Dockerfile
-      # Alternative: Use Dockerfile.simple for a simpler Python 3.13 build
-      # dockerfile: Dockerfile.simple
+      # Alternative options:
+      # dockerfile: Dockerfile.simple  # Python 3.13 from official image
+      # dockerfile: Dockerfile.stable  # (if it existed)
     image: zabbix-mcp-local:latest
     container_name: zabbix-mcp
     hostname: zabbix-mcp

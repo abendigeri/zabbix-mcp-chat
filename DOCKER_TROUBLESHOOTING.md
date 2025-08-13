@@ -12,22 +12,29 @@
 
 ### Issue 2: uv/pipx installation issues
 
-**Error**: Various errors with `pipx` or `uv` installation
+**Error**: `/app/venv/bin/pip: not found` or various errors with `pipx` or `uv` installation
+
+**Cause**: `uv venv` creates virtual environments without pip installed by default.
 
 **Solutions**:
 
-1. **Use the simple Dockerfile approach**:
+1. **Use the stable Dockerfile approach** (Recommended):
    ```bash
-   # For zabbix-mcp-server, use the simple Dockerfile
-   cd zabbix-mcp-server
-   mv Dockerfile Dockerfile.complex
-   mv Dockerfile.simple Dockerfile
+   # Uses official Python 3.13 image - most reliable
+   # Already configured in docker-compose.yml
+   docker-compose build zabbix-mcp
    ```
 
-2. **Use standard Python 3.13 image**:
+2. **Use the simple Dockerfile approach**:
+   ```bash
+   # Edit docker-compose.yml to use Dockerfile.simple
+   dockerfile: Dockerfile.simple
+   ```
+
+3. **Fix the complex Dockerfile**:
    ```dockerfile
-   FROM python:3.13-slim
-   # Much simpler and more reliable
+   # Use direct pip installation instead of uv
+   RUN python3.13 -m pip install -r requirements.txt
    ```
 
 ### Issue 3: Build context issues

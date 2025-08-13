@@ -25,17 +25,10 @@ RUN add-apt-repository ppa:deadsnakes/ppa -y \
 # Install pip for Python 3.13
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.13
 
-# Install pipx and uv for better package management
-RUN python3.13 -m pip install --no-cache-dir pipx && \
-    python3.13 -m pipx install uv
-
-# Set up PATH for pipx
-ENV PATH="/root/.local/bin:${PATH}"
-
-# Install Python dependencies
+# Install Python dependencies directly (simpler approach)
 COPY requirements.txt .
-RUN uv venv --python 3.13 /app/venv && \
-    /app/venv/bin/pip install -r requirements.txt
+RUN python3.13 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    python3.13 -m pip install --no-cache-dir -r requirements.txt
 
 # Copy app
 COPY src/ ./src/
@@ -44,7 +37,7 @@ COPY config/ ./config/
 
 EXPOSE 8000
 
-# Start server using the virtual environment
-CMD ["/app/venv/bin/python", "scripts/start_server.py"]
+# Start server using Python 3.13 directly
+CMD ["python3.13", "scripts/start_server.py"]
 
 
