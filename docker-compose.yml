@@ -137,9 +137,6 @@ services:
     image: zabbix-mcp-local:latest
     container_name: zabbix-mcp
     hostname: zabbix-mcp
-    depends_on:
-      zabbix-web:
-        condition: service_healthy
     environment:
       ZABBIX_URL: http://zabbix-web:8080
         #ZABBIX_USER: Admin
@@ -155,21 +152,12 @@ services:
       - "8000:8000"
     networks: [monitor-net]
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python3.13", "/app/scripts/test_server.py", "--health"]
-      interval: 30s
-      timeout: 15s
-      retries: 5
-      start_period: 60s
     
   # Open WebUI (UI only; uses Ollama backend for GPU inference)
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     hostname: open-webui
-    depends_on:
-      ollama:
-        condition: service_healthy
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       WEBUI_AUTH: "false"
@@ -213,7 +201,7 @@ services:
       MCP_URL: http://zabbix-mcp:8000/mcp
       OLLAMA_HOST: http://ollama:11434
       OLLAMA_MODEL: qwen2.5:3b-instruct
-      WAIT_FOR_SERVICES: true
+      WAIT_FOR_SERVICES: false
     ports:
       - "9000:9000"
     networks:
