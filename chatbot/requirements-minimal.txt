@@ -1,0 +1,23 @@
+# Minimal requirements for chatbot - fallback version
+# Use this if the main requirements.txt has conflicts
+
+# Core framework (using older, more compatible versions)
+fastapi>=0.100.0,<0.105.0
+uvicorn>=0.20.0,<0.25.0
+
+# HTTP and async
+httpx>=0.24.0
+anyio>=4.6.0
+
+# AI libraries
+ollama>=0.1.0
+
+# MCP support (try without specific version first)
+mcp
+
+# Web utilities
+python-multipart
+jinja2
+
+# Core Python typing
+typing-extensions

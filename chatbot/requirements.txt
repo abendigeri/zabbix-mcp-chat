@@ -1,8 +1,25 @@
+# Core web framework
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-mcp==1.0.0
-ollama==0.1.7
+
+# HTTP client and async support
 httpx==0.25.2
+anyio>=4.6.0
+sniffio>=1.3.0
+
+# AI and MCP dependencies
+ollama==0.1.7
+mcp==1.0.0
+
+# Web utilities
 python-multipart==0.0.6
 jinja2==3.1.2
+
+# Core dependencies
+typing-extensions>=4.8.0
+pydantic>=2.0.0
+
+# Optional: Pin compatible versions if conflicts persist
+# idna>=3.4
+# certifi>=2023.0.0
 
