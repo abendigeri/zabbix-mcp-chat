@@ -1,0 +1,4 @@
+zabbix_utils
+python-dotenv
+mcpo
+fastmcp

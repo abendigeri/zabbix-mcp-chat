@@ -1,0 +1,8 @@
+   204.5ms (setup:727): 2025-08-13 00:33:55
+   204.6ms (setup:728): /usr/bin/pipx install uv
+   204.6ms (setup:729): pipx version is 1.0.0
+   204.7ms (setup:730): Default python interpreter is '/usr/bin/python3'
+   205.0ms (package_name_from_spec:323): Determined package name: uv
+   205.0ms (package_name_from_spec:324): Package name determined in 0.0s
+   205.5ms (needs_upgrade:69): Time since last upgrade of shared libs, in seconds: 1762. Upgrade will be run by pipx if greater than 2592000.
+   205.6ms (cli:790): pipx finished.
