@@ -52,23 +52,21 @@ class ChatbotService:
         self.cache_timestamp = None
         self.mcp_available = False
     
-    async def get_mcp_session(self) -> Optional[ClientSession]:
-        """Get or create MCP session with error handling."""
+    async def test_mcp_connection(self) -> bool:
+        """Test MCP connection without keeping the session open."""
         if not MCP_ENABLED:
-            return None
+            return False
             
         try:
-            # Use the context manager properly
-            client = streamablehttp_client(MCP_URL)
-            session = await client.__aenter__()
-            # Test connection by listing tools
-            tools_response = await session.list_tools()
-            logger.info(f"Connected to MCP server with {len(tools_response.tools)} tools")
-            return session
+            async with streamablehttp_client(MCP_URL) as session:
+                tools_response = await session.list_tools()
+                logger.info(f"MCP server test successful with {len(tools_response.tools)} tools")
+                self.mcp_available = True
+                return True
         except Exception as e:
-            logger.error(f"Failed to connect to MCP server: {e}")
+            logger.error(f"MCP connection test failed: {e}")
             self.mcp_available = False
-            return None
+            return False
     
     async def get_tools(self, force_refresh: bool = False) -> Dict[str, mtypes.Tool]:
         """Get tools with caching."""
@@ -79,19 +77,16 @@ class ChatbotService:
         if (self.tools_cache is None or force_refresh or 
             (self.cache_timestamp and (now - self.cache_timestamp).seconds > 300)):
             
-            session = await self.get_mcp_session()
-            if session is None:
-                logger.warning("MCP server not available, returning empty tools")
-                return {}
-            
             try:
-                tools_resp = await session.list_tools()
-                self.tools_cache = {t.name: t for t in tools_resp.tools}
-                self.cache_timestamp = now
-                self.mcp_available = True
-                logger.info(f"Loaded {len(self.tools_cache)} tools from MCP server")
+                async with streamablehttp_client(MCP_URL) as session:
+                    tools_resp = await session.list_tools()
+                    self.tools_cache = {t.name: t for t in tools_resp.tools}
+                    self.cache_timestamp = now
+                    self.mcp_available = True
+                    logger.info(f"Loaded {len(self.tools_cache)} tools from MCP server")
             except Exception as e:
                 logger.error(f"Failed to list tools: {e}")
+                self.mcp_available = False
                 return {}
         
         return self.tools_cache or {}
@@ -201,30 +196,22 @@ A:"""
                 }
             
             # Get fresh session for tool execution
-            session = await self.get_mcp_session()
-            if session is None:
-                return {
-                    "choice": choice,
-                    "result": {"text": "Failed to connect to MCP server for tool execution."},
-                    "error": "mcp_connection_failed",
-                    "timestamp": datetime.now().isoformat()
-                }
-            
             try:
-                res = await session.call_tool(tool_name, arguments=args)
-                
-                if hasattr(res, 'structuredContent') and res.structuredContent:
-                    payload = {"structured": res.structuredContent}
-                else:
-                    texts = [c.text for c in (res.content or []) if hasattr(c, "text")]
-                    payload = {"text": "\n".join(texts) if texts else "No content returned"}
-                
-                return {
-                    "choice": choice,
-                    "result": payload,
-                    "error": None,
-                    "timestamp": datetime.now().isoformat()
-                }
+                async with streamablehttp_client(MCP_URL) as session:
+                    res = await session.call_tool(tool_name, arguments=args)
+                    
+                    if hasattr(res, 'structuredContent') and res.structuredContent:
+                        payload = {"structured": res.structuredContent}
+                    else:
+                        texts = [c.text for c in (res.content or []) if hasattr(c, "text")]
+                        payload = {"text": "\n".join(texts) if texts else "No content returned"}
+                    
+                    return {
+                        "choice": choice,
+                        "result": payload,
+                        "error": None,
+                        "timestamp": datetime.now().isoformat()
+                    }
                 
             except Exception as e:
                 logger.error(f"Tool execution failed: {e}")
@@ -258,9 +245,9 @@ async def lifespan(app: FastAPI):
     if MCP_ENABLED:
         try:
             # Test MCP connection
-            tools = await chatbot_service.get_tools()
-            if tools:
-                logger.info(f"Successfully connected to MCP server with {len(tools)} tools")
+            is_connected = await chatbot_service.test_mcp_connection()
+            if is_connected:
+                logger.info("Successfully connected to MCP server")
                 chatbot_service.mcp_available = True
             else:
                 logger.warning("MCP server connection failed, continuing without MCP functionality")
