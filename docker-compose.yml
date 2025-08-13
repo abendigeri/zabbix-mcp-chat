@@ -205,15 +205,10 @@ services:
   chatbot:
     build:
       context: ./chatbot
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.robust
     image: chatbot:latest
     container_name: chatbot
     hostname: chatbot
-    depends_on:
-      zabbix-mcp:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
     environment:
       MCP_URL: http://zabbix-mcp:8000/mcp
       OLLAMA_HOST: http://ollama:11434

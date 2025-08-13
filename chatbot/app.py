@@ -276,5 +276,16 @@ async def list_tools():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=9000)
+    
+    # Log startup information
+    logger.info(f"Starting Zabbix Chatbot on port 9000")
+    logger.info(f"MCP_URL: {MCP_URL}")
+    logger.info(f"OLLAMA_HOST: {OLLAMA_HOST}")
+    logger.info(f"OLLAMA_MODEL: {OLLAMA_MODEL}")
+    
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=9000, log_level="info")
+    except Exception as e:
+        logger.error(f"Failed to start server: {e}")
+        raise
 

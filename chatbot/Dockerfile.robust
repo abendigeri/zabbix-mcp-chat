@@ -47,11 +47,43 @@ COPY . .
 RUN useradd -m -u 1000 chatbot && chown -R chatbot:chatbot /app
 USER chatbot
 
+# Create a startup script to handle dependencies
+RUN echo '#!/bin/bash\n\
+echo "Starting Zabbix Chatbot..."\n\
+echo "Environment variables:"\n\
+echo "  MCP_URL: $MCP_URL"\n\
+echo "  OLLAMA_HOST: $OLLAMA_HOST"\n\
+echo "  OLLAMA_MODEL: $OLLAMA_MODEL"\n\
+echo "  WAIT_FOR_SERVICES: $WAIT_FOR_SERVICES"\n\
+\n\
+if [ "$WAIT_FOR_SERVICES" = "true" ]; then\n\
+  echo "Waiting for services to be ready..."\n\
+  max_attempts=30\n\
+  attempt=0\n\
+  \n\
+  while [ $attempt -lt $max_attempts ]; do\n\
+    if curl -sf "$MCP_URL" >/dev/null 2>&1 && curl -sf "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then\n\
+      echo "✅ All services are ready!"\n\
+      break\n\
+    fi\n\
+    echo "⏳ Waiting for services... ($((attempt+1))/$max_attempts)"\n\
+    sleep 10\n\
+    attempt=$((attempt+1))\n\
+  done\n\
+  \n\
+  if [ $attempt -eq $max_attempts ]; then\n\
+    echo "⚠️  Services not ready after $((max_attempts*10)) seconds, starting anyway..."\n\
+  fi\n\
+fi\n\
+\n\
+echo "🚀 Starting FastAPI server..."\n\
+exec python app.py' > /app/start.sh && chmod +x /app/start.sh
+
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:9000/health || exit 1
 
 ENV PORT=9000
 EXPOSE 9000
 
-CMD ["python", "app.py"]
+CMD ["/app/start.sh"]
