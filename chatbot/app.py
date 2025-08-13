@@ -4,6 +4,7 @@ import re
 import asyncio
 import logging
 import os
+import aiohttp
 from typing import Any, Dict, Iterable, Tuple, Optional
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -53,16 +54,41 @@ class ChatbotService:
         self.mcp_available = False
     
     async def test_mcp_connection(self) -> bool:
-        """Test MCP connection without keeping the session open."""
+        """Test MCP connection using simple HTTP check."""
         if not MCP_ENABLED:
             return False
             
         try:
-            async with streamablehttp_client(MCP_URL) as session:
-                tools_response = await session.list_tools()
-                logger.info(f"MCP server test successful with {len(tools_response.tools)} tools")
-                self.mcp_available = True
-                return True
+            # First test basic HTTP connectivity
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(MCP_URL.replace('/mcp', '/health')) as response:
+                    if response.status == 200:
+                        logger.info("MCP server health check passed")
+                    else:
+                        logger.warning(f"MCP server health check returned status {response.status}")
+        except Exception as e:
+            logger.warning(f"MCP server health check failed: {e}")
+        
+        # Now try MCP protocol connection with better error handling
+        try:
+            # Suppress internal asyncio warnings temporarily
+            old_level = logging.getLogger('asyncio').level
+            logging.getLogger('asyncio').setLevel(logging.ERROR)
+            
+            try:
+                async with streamablehttp_client(MCP_URL) as client:
+                    tools_response = await asyncio.wait_for(client.list_tools(), timeout=5.0)
+                    logger.info(f"MCP server test successful with {len(tools_response.tools)} tools")
+                    self.mcp_available = True
+                    return True
+            finally:
+                logging.getLogger('asyncio').setLevel(old_level)
+                
+        except asyncio.TimeoutError:
+            logger.error("MCP connection test timed out")
+            self.mcp_available = False
+            return False
         except Exception as e:
             logger.error(f"MCP connection test failed: {e}")
             self.mcp_available = False
@@ -78,12 +104,24 @@ class ChatbotService:
             (self.cache_timestamp and (now - self.cache_timestamp).seconds > 300)):
             
             try:
-                async with streamablehttp_client(MCP_URL) as session:
-                    tools_resp = await session.list_tools()
-                    self.tools_cache = {t.name: t for t in tools_resp.tools}
-                    self.cache_timestamp = now
-                    self.mcp_available = True
-                    logger.info(f"Loaded {len(self.tools_cache)} tools from MCP server")
+                # Suppress internal asyncio warnings temporarily
+                old_level = logging.getLogger('asyncio').level
+                logging.getLogger('asyncio').setLevel(logging.ERROR)
+                
+                try:
+                    async with streamablehttp_client(MCP_URL) as client:
+                        tools_resp = await asyncio.wait_for(client.list_tools(), timeout=5.0)
+                        self.tools_cache = {t.name: t for t in tools_resp.tools}
+                        self.cache_timestamp = now
+                        self.mcp_available = True
+                        logger.info(f"Loaded {len(self.tools_cache)} tools from MCP server")
+                finally:
+                    logging.getLogger('asyncio').setLevel(old_level)
+                    
+            except asyncio.TimeoutError:
+                logger.error("MCP tools request timed out")
+                self.mcp_available = False
+                return {}
             except Exception as e:
                 logger.error(f"Failed to list tools: {e}")
                 self.mcp_available = False
@@ -123,7 +161,9 @@ Examples:
 Q: {user_prompt}
 A:"""
             
-            response = ollama.chat(
+            # Configure Ollama client with the proper host
+            client = ollama.Client(host=OLLAMA_HOST)
+            response = client.chat(
                 model=OLLAMA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.1}
@@ -197,24 +237,42 @@ A:"""
             
             # Get fresh session for tool execution
             try:
-                async with streamablehttp_client(MCP_URL) as session:
-                    res = await session.call_tool(tool_name, arguments=args)
-                    
-                    if hasattr(res, 'structuredContent') and res.structuredContent:
-                        payload = {"structured": res.structuredContent}
-                    else:
-                        texts = [c.text for c in (res.content or []) if hasattr(c, "text")]
-                        payload = {"text": "\n".join(texts) if texts else "No content returned"}
-                    
-                    return {
-                        "choice": choice,
-                        "result": payload,
-                        "error": None,
-                        "timestamp": datetime.now().isoformat()
-                    }
+                # Suppress internal asyncio warnings temporarily
+                old_level = logging.getLogger('asyncio').level
+                logging.getLogger('asyncio').setLevel(logging.ERROR)
                 
+                try:
+                    async with streamablehttp_client(MCP_URL) as client:
+                        res = await asyncio.wait_for(
+                            client.call_tool(tool_name, arguments=args), 
+                            timeout=10.0
+                        )
+                        
+                        if hasattr(res, 'structuredContent') and res.structuredContent:
+                            payload = {"structured": res.structuredContent}
+                        else:
+                            texts = [c.text for c in (res.content or []) if hasattr(c, "text")]
+                            payload = {"text": "\n".join(texts) if texts else "No content returned"}
+                        
+                        return {
+                            "choice": choice,
+                            "result": payload,
+                            "error": None,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                finally:
+                    logging.getLogger('asyncio').setLevel(old_level)
+                    
+            except asyncio.TimeoutError:
+                logger.error("MCP tool execution timed out")
+                return {
+                    "choice": choice,
+                    "result": {"text": "Tool execution timed out"},
+                    "error": "tool_execution_timeout",
+                    "timestamp": datetime.now().isoformat()
+                }
             except Exception as e:
-                logger.error(f"Tool execution failed: {e}")
+                logger.error(f"MCP tool execution failed: {e}")
                 return {
                     "choice": choice,
                     "result": {"text": f"Tool execution failed: {str(e)}"},
