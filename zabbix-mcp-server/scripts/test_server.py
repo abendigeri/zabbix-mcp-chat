@@ -229,6 +229,19 @@ def main() -> None:
     """Main test function."""
     setup_logging()
     
+    # For health checks, do a quick test
+    if len(sys.argv) > 1 and sys.argv[1] == "--health":
+        try:
+            if test_import() and test_environment():
+                print("✅ Health check passed")
+                sys.exit(0)
+            else:
+                print("❌ Health check failed")
+                sys.exit(1)
+        except Exception as e:
+            print(f"❌ Health check error: {e}")
+            sys.exit(1)
+    
     print("🧪 Zabbix MCP Server Test Suite")
     print("=" * 50)
     

@@ -1369,8 +1369,19 @@ def main():
     logger.info(f"Read-only mode: {is_read_only()}")
     logger.info(f"Zabbix URL: {os.getenv('ZABBIX_URL', 'Not configured')}")
     
+    # Test connection before starting server
     try:
-        mcp.run(transport="streamable-http",host="0.0.0.0",port=8000)
+        logger.info("Testing Zabbix connection...")
+        client = get_zabbix_client()
+        version = client.apiinfo.version()
+        logger.info(f"Successfully connected to Zabbix API version: {version}")
+    except Exception as e:
+        logger.error(f"Failed to connect to Zabbix: {e}")
+        logger.error("Server will start but may not function properly until Zabbix is available")
+    
+    try:
+        logger.info("Starting FastMCP server on 0.0.0.0:8000")
+        mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
     except Exception as e:

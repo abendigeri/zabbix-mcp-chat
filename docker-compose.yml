@@ -156,7 +156,7 @@ services:
     networks: [monitor-net]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "/app/scripts/test_server.py"]
+      test: ["CMD", "python3.13", "/app/scripts/test_server.py", "--health"]
       interval: 30s
       timeout: 15s
       retries: 5
