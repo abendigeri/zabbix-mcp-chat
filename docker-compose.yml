@@ -202,6 +202,7 @@ services:
       OLLAMA_HOST: http://ollama:11434
       OLLAMA_MODEL: qwen2.5:3b-instruct
       WAIT_FOR_SERVICES: false
+      MCP_ENABLED: true
     ports:
       - "9000:9000"
     networks:
