@@ -34,7 +34,6 @@ RUN add-apt-repository ppa:deadsnakes/ppa -y \
     python3.13 \
     python3.13-venv \
     python3.13-dev \
-    python3.13-distutils \
     && ln -sf /usr/bin/python3.13 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.13 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
@@ -52,14 +51,16 @@ RUN python3.13 -m pip install --no-cache-dir \
     websockets \
     fastapi \
     uvicorn \
-    mcp \
+    fastmcp \
     ollama \
     pytest \
     jupyter \
     ipython \
     black \
     flake8 \
-    mypy
+    mypy \
+    zabbix-utils \
+    python-dotenv
 
 # Create workspace directory
 WORKDIR /root

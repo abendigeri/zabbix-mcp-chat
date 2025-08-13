@@ -14,19 +14,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python 3.13 and make it default
 RUN add-apt-repository ppa:deadsnakes/ppa -y \
- && apt-get update && apt-get install -y --no-install-recommends \
-    python3.13 python3.13-venv python3.13-dev \
- && ln -sf /usr/bin/python3.13 /usr/bin/python3 \
- && ln -sf /usr/bin/python3.13 /usr/bin/python \
- && rm -rf /var/lib/apt/lists/*
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.13 \
+    python3.13-venv \
+    python3.13-dev \
+    && ln -sf /usr/bin/python3.13 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.13 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install uv via pipx (uses Python 3.13 by default now)
-#RUN pipx install uv && uv --version
+# Install pip for Python 3.13
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.13
+
+# Install pipx and uv for better package management
+RUN python3.13 -m pip install --no-cache-dir pipx && \
+    python3.13 -m pipx install uv
+
+# Set up PATH for pipx
+ENV PATH="/root/.local/bin:${PATH}"
 
 # Install Python dependencies
 COPY requirements.txt .
-#RUN uv pip install --system -r requirements.txt && \
-#    uv pip install --system fastmcp  # ensures fastmcp is available
+RUN uv venv --python 3.13 /app/venv && \
+    /app/venv/bin/pip install -r requirements.txt
 
 # Copy app
 COPY src/ ./src/
@@ -35,7 +44,7 @@ COPY config/ ./config/
 
 EXPOSE 8000
 
-# Start server with python pointing to 3.13
-CMD ["tail", "-f", "/dev/null"]
+# Start server using the virtual environment
+CMD ["/app/venv/bin/python", "scripts/start_server.py"]
 
 
