@@ -1,15 +1,29 @@
-FROM python:3.12-slim
+FROM python:3.11-slim
 
-# Use uv if you want, but keeping it simple with pip:
 WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for better caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
-COPY static ./static
+# Copy application code
+COPY . .
+
+# Create non-root user
+RUN useradd -m -u 1000 chatbot && chown -R chatbot:chatbot /app
+USER chatbot
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:9000/health || exit 1
 
 ENV PORT=9000
 EXPOSE 9000
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9000", "--reload"]
+CMD ["python", "app.py"]
 

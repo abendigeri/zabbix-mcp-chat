@@ -9,6 +9,7 @@ volumes:
   pgdata:
   ollama-data:
   openwebui-data:
+  zabbix-logs:
 
 services:
   db:
@@ -23,28 +24,47 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks: [monitor-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabbix -d zabbix"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   zabbix-server:
     image: zabbix/zabbix-server-pgsql:ubuntu-7.4-latest
     container_name: zabbix-server
     hostname: zabbix-server
-    depends_on: [db]
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       DB_SERVER_HOST: zabbix-db
       POSTGRES_USER: zabbix
       POSTGRES_PASSWORD: zabbix
       POSTGRES_DB: zabbix
       ZBX_STARTPOLLERS: 10
+      ZBX_DEBUGLEVEL: 3
     ports:
       - "10051:10051"
     networks: [monitor-net]
     restart: unless-stopped
+    volumes:
+      - zabbix-logs:/var/log/zabbix
+    healthcheck:
+      test: ["CMD-SHELL", "zabbix_server --test-config || exit 0"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
 
   zabbix-web:
     image: zabbix/zabbix-web-nginx-pgsql:ubuntu-7.4-latest
     container_name: zabbix-web
     hostname: zabbix-web
-    depends_on: [db, zabbix-server]
+    depends_on:
+      db:
+        condition: service_healthy
+      zabbix-server:
+        condition: service_healthy
     environment:
       DB_SERVER_HOST: zabbix-db
       POSTGRES_USER: zabbix
@@ -52,10 +72,16 @@ services:
       POSTGRES_DB: zabbix
       ZBX_SERVER_HOST: zabbix-server
       PHP_TZ: "Asia/Kolkata"
+      ZBX_HISTORYSTORAGETYPES: log,text
     ports:
       - "8080:8080"
     networks: [monitor-net]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/api_jsonrpc.php || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   zabbix-agent2:
     image: zabbix/zabbix-agent2:ubuntu-7.4-latest
@@ -66,6 +92,7 @@ services:
       ZBX_SERVER_HOST: zabbix-server
       ZBX_SERVER_PORT: "10051"
       ZBX_LISTENPORT: "10500"
+      ZBX_ACTIVE_ALLOW: true
     ports:
       - "10500:10500"
     networks: [monitor-net]
@@ -75,9 +102,16 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     hostname: ollama
-    gpus: all                    # GPU is used here (inference backend)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     environment:
       - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_HOST=0.0.0.0
     volumes:
       - ollama-data:/root/.ollama
     ports:
@@ -85,6 +119,11 @@ services:
     networks: [monitor-net]
     restart: unless-stopped
     command: ["serve"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     
       
   # Build Zabbix MCP from local clone at ./zabbix-mcp-server
@@ -95,7 +134,9 @@ services:
     image: zabbix-mcp-local:latest
     container_name: zabbix-mcp
     hostname: zabbix-mcp
-    depends_on: [zabbix-server, zabbix-web]
+    depends_on:
+      zabbix-web:
+        condition: service_healthy
     environment:
       ZABBIX_URL: http://zabbix-web:8080
         #ZABBIX_USER: Admin
@@ -103,7 +144,7 @@ services:
       ZABBIX_TOKEN: d4dbe098d5247887984de10aee996209b93c72f9ecf2801e0fe238cb0f14bdf8
       READ_ONLY: true
       DEBUG: 1
-
+      WAIT_FOR_ZABBIX: true
 
     env_file:
       - ./.env           # requires ZABBIX_URL=http://zabbix-web:8080 and ZABBIX_TOKEN=...
@@ -111,16 +152,25 @@ services:
       - "8000:8000"
     networks: [monitor-net]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/test_server.py"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
     
   # Open WebUI (UI only; uses Ollama backend for GPU inference)
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     hostname: open-webui
+    depends_on:
+      ollama:
+        condition: service_healthy
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
-      # WEBUI_AUTH: "true"
-      # DEFAULT_MODELS: "qwen2.5:3b-instruct"
+      WEBUI_AUTH: "false"
+      DEFAULT_MODELS: "qwen2.5:3b-instruct"
     ports:
       - "3000:8080"
     volumes:
@@ -133,7 +183,7 @@ services:
     image: ubuntu:22.04
     container_name: jump-server
     hostname: jump-server
-    command: ["/bin/bash","-lc","sleep infinity"]
+    command: ["/bin/bash", "-c", "apt-get update && apt-get install -y curl jq python3 python3-pip && sleep infinity"]
     tty: true
 
     ports:
@@ -149,12 +199,28 @@ services:
   chatbot:
     build:
       context: ./chatbot
+      dockerfile: Dockerfile
     image: chatbot:latest
     container_name: chatbot
     hostname: chatbot
+    depends_on:
+      zabbix-mcp:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      MCP_URL: http://zabbix-mcp:8000/mcp
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: qwen2.5:3b-instruct
+      WAIT_FOR_SERVICES: true
     ports:
       - "9000:9000"
     networks:
       - monitor-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 

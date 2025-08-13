@@ -1,22 +1,35 @@
 #!/usr/bin/env python3
-import json, re, asyncio
+import json
+import re
+import asyncio
+import logging
+import os
 from typing import Any, Dict, Iterable, Tuple, Optional
-from fastapi import FastAPI, Request
+from datetime import datetime
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 import ollama
 from mcp import ClientSession, types as mtypes
 from mcp.client.streamable_http import streamablehttp_client
-from mcp.client.sse import sse_client
 
-# --- Hardcoded config (matches your working bridge) ---
-MCP_URL = "http://zabbix-mcp:8000/mcp"
-OLLAMA_HOST = "http://ollama:11434"
-OLLAMA_MODEL = "qwen2.5:3b-instruct"
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Configuration from environment
+MCP_URL = os.getenv("MCP_URL", "http://zabbix-mcp:8000/mcp")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b-instruct")
 
 SYSTEM_PROMPT = (
-    "You are a tool-using assistant for Zabbix.\n"
+    "You are a tool-using assistant for Zabbix monitoring.\n"
     'Return ONLY {"tool": "<name or null>", "arguments": {}} as strict JSON.\n'
     "Choose exactly one tool from the provided list (or null). No prose."
 )
@@ -26,101 +39,242 @@ FEWSHOTS: Iterable[Tuple[str, Dict[str, Any]]] = (
      {"tool": "problem_get", "arguments": {"recent": True, "severity": ["5"], "limit": 5}}),
     ("List all hosts",
      {"tool": "host_get", "arguments": {}}),
-    ("API version",
+    ("Get API version",
      {"tool": "apiinfo_version", "arguments": {}}),
+    ("Show host status",
+     {"tool": "host_get", "arguments": {"output": ["hostid", "name", "status"]}}),
 )
 
-def _force_json(s: str) -> Optional[dict]:
-    m = re.search(r"\{.*\}", s, re.S)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except Exception:
-        return None
-
-def _choose_tool_with_ollama(user_prompt: str, tools: Dict[str, mtypes.Tool]) -> Dict[str, Any]:
-    tool_summaries = []
-    for name, t in tools.items():
-        schema = getattr(t, "inputSchema", None) or getattr(t, "input_schema", None)
-        tool_summaries.append({"name": name, "schema": schema})
-
-    msgs = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "system", "content": "Tools: " + json.dumps(tool_summaries)[:25000]},
-    ]
-    for u, a in FEWSHOTS:
-        msgs += [{"role": "user", "content": u},
-                 {"role": "assistant", "content": json.dumps(a, ensure_ascii=False)}]
-    msgs.append({"role": "user", "content": user_prompt})
-
-    client = ollama.Client(host=OLLAMA_HOST)
-    resp = client.chat(model=OLLAMA_MODEL, messages=msgs, format="json",
-                       options={"temperature": 0})
-    text = (resp.get("message") or {}).get("content", "").strip()
-
-    parsed = _force_json(text)
-    if isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
-        return parsed
-
-    # Heuristic fallback
-    s = user_prompt.lower()
-    if "version" in s or "api" in s: return {"tool": "apiinfo_version", "arguments": {}}
-    if any(k in s for k in ("problem","incident","alert")):
-        return {"tool": "problem_get", "arguments": {"recent": True, "limit": 5}}
-    if "host" in s: return {"tool": "host_get", "arguments": {}}
-    return {"tool": None, "arguments": {}}
-
-async def _connect_session():
-    # Try streamable then SSE, with /mcp already hardcoded in MCP_URL.
-    last_err = None
-    for client in (streamablehttp_client, sse_client):
+class ChatbotService:
+    def __init__(self):
+        self.tools_cache = None
+        self.cache_timestamp = None
+    
+    async def get_mcp_session(self) -> ClientSession:
+        """Get or create MCP session with error handling."""
         try:
-            async with client(MCP_URL) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    return session
+            session = await streamablehttp_client(MCP_URL).__aenter__()
+            # Test connection
+            await session.list_tools()
+            return session
         except Exception as e:
-            last_err = e
-    raise RuntimeError(f"Cannot connect to MCP at {MCP_URL}: {last_err}")
+            logger.error(f"Failed to connect to MCP server: {e}")
+            raise HTTPException(status_code=503, detail="MCP server unavailable")
+    
+    async def get_tools(self, force_refresh: bool = False) -> Dict[str, mtypes.Tool]:
+        """Get tools with caching."""
+        now = datetime.now()
+        if (self.tools_cache is None or force_refresh or 
+            (self.cache_timestamp and (now - self.cache_timestamp).seconds > 300)):
+            
+            async with await self.get_mcp_session() as session:
+                tools_resp = await session.list_tools()
+                self.tools_cache = {t.name: t for t in tools_resp.tools}
+                self.cache_timestamp = now
+                logger.info(f"Loaded {len(self.tools_cache)} tools from MCP server")
+        
+        return self.tools_cache
+    
+    def choose_tool_with_ollama(self, user_prompt: str, tools: Dict[str, mtypes.Tool]) -> Dict[str, Any]:
+        """Use Ollama to choose appropriate tool."""
+        try:
+            tool_descriptions = []
+            for name, tool in tools.items():
+                desc = f"- {name}: {tool.description}"
+                if hasattr(tool, 'inputSchema') and tool.inputSchema:
+                    props = tool.inputSchema.get('properties', {})
+                    if props:
+                        params = ', '.join(props.keys())
+                        desc += f" (params: {params})"
+                tool_descriptions.append(desc)
+            
+            few_shot_examples = []
+            for example_q, example_a in FEWSHOTS:
+                few_shot_examples.append(f"Q: {example_q}\nA: {json.dumps(example_a)}")
+            
+            prompt = f"""{SYSTEM_PROMPT}
 
-async def _run_query(user_prompt: str) -> Dict[str, Any]:
-    async with await _connect_session() as session:  # type: ignore
-        tools_resp = await session.list_tools()
-        tools = {t.name: t for t in tools_resp.tools}
-        choice = _choose_tool_with_ollama(user_prompt, tools)
+Available tools:
+{chr(10).join(tool_descriptions)}
 
-        name = choice.get("tool")
-        args = choice.get("arguments", {})
-        if not name or name not in tools:
-            return {"choice": choice, "result": None, "error": "no_tool_selected"}
+Examples:
+{chr(10).join(few_shot_examples)}
 
-        res = await session.call_tool(name, arguments=args)
-        if getattr(res, "structuredContent", None) is not None:
-            payload = {"structured": res.structuredContent}
-        else:
-            texts = [c.text for c in (res.content or []) if hasattr(c, "text")]
-            payload = {"text": "\n".join(texts) if texts else None}
+Q: {user_prompt}
+A:"""
+            
+            response = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.1}
+            )
+            
+            content = response["message"]["content"].strip()
+            return self._force_json(content) or {"tool": None, "arguments": {}}
+            
+        except Exception as e:
+            logger.error(f"Ollama request failed: {e}")
+            return {"tool": None, "arguments": {}, "error": str(e)}
+    
+    def _force_json(self, s: str) -> Optional[Dict[str, Any]]:
+        """Extract JSON from response."""
+        s = s.strip()
+        if s.startswith("```json"):
+            s = s[7:]
+        if s.endswith("```"):
+            s = s[:-3]
+        
+        # Try direct parsing
+        try:
+            return json.loads(s)
+        except:
+            pass
+        
+        # Try finding JSON in text
+        json_match = re.search(r'\{[^}]+\}', s)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except:
+                pass
+        
+        return None
+    
+    async def run_query(self, user_prompt: str) -> Dict[str, Any]:
+        """Execute user query through MCP."""
+        try:
+            tools = await self.get_tools()
+            choice = self.choose_tool_with_ollama(user_prompt, tools)
+            
+            tool_name = choice.get("tool")
+            args = choice.get("arguments", {})
+            
+            if not tool_name or tool_name not in tools:
+                return {
+                    "choice": choice,
+                    "result": None,
+                    "error": "no_tool_selected",
+                    "available_tools": list(tools.keys())
+                }
+            
+            async with await self.get_mcp_session() as session:
+                res = await session.call_tool(tool_name, arguments=args)
+                
+                if hasattr(res, 'structuredContent') and res.structuredContent:
+                    payload = {"structured": res.structuredContent}
+                else:
+                    texts = [c.text for c in (res.content or []) if hasattr(c, "text")]
+                    payload = {"text": "\n".join(texts) if texts else "No content returned"}
+                
+                return {
+                    "choice": choice,
+                    "result": payload,
+                    "error": None,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+        except Exception as e:
+            logger.error(f"Query execution failed: {e}")
+            return {
+                "choice": choice if 'choice' in locals() else None,
+                "result": None,
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
 
-        return {"choice": choice, "result": payload, "error": None}
+# Initialize service
+chatbot_service = ChatbotService()
 
-# --- FastAPI app ---
-app = FastAPI()
+# FastAPI app with lifespan
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting Zabbix Chatbot Service")
+    try:
+        # Test connections
+        await chatbot_service.get_tools()
+        logger.info("Successfully connected to MCP server")
+    except Exception as e:
+        logger.error(f"Failed to initialize: {e}")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Zabbix Chatbot Service")
+
+app = FastAPI(title="Zabbix Chatbot", lifespan=lifespan)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
-def index():
+async def index():
     return FileResponse("static/index.html")
 
 @app.post("/chat")
 async def chat(req: Request):
-    body = await req.json()
-    user_msg = (body.get("message") or "").strip()
-    if not user_msg:
-        return JSONResponse({"error": "empty_message"}, status_code=400)
     try:
-        out = await _run_query(user_msg)
-        return JSONResponse(out)
+        body = await req.json()
+        user_msg = (body.get("message") or "").strip()
+        
+        if not user_msg:
+            raise HTTPException(status_code=400, detail="Message cannot be empty")
+        
+        logger.info(f"Processing query: {user_msg}")
+        result = await chatbot_service.run_query(user_msg)
+        
+        return JSONResponse(result)
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        logger.error(f"Chat endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    try:
+        tools = await chatbot_service.get_tools()
+        return {
+            "status": "healthy",
+            "mcp_connection": "ok",
+            "tools_count": len(tools),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return JSONResponse(
+            {"status": "unhealthy", "error": str(e)},
+            status_code=503
+        )
+
+@app.get("/tools")
+async def list_tools():
+    """List available MCP tools."""
+    try:
+        tools = await chatbot_service.get_tools()
+        return {
+            "tools": [
+                {
+                    "name": name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema.get('properties', {}) if tool.inputSchema else {}
+                }
+                for name, tool in tools.items()
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=9000)
 
