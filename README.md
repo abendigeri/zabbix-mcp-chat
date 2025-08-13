@@ -60,8 +60,27 @@ git clone <your-repo-url>
 cd zabbix-mcp-chat
 ```
 
-### 2. Configure Environment
-Create a `.env` file in the root directory:
+### 2. Initial Setup
+
+#### Windows (PowerShell)
+```powershell
+.\setup.ps1
+```
+
+#### Linux/macOS
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+This setup script will:
+- Make all shell scripts executable (Linux/macOS)
+- Create a default `.env` file if it doesn't exist
+- Check Docker installation
+- Display next steps
+
+### 3. Configure Environment
+Update the `.env` file created by the setup script with your actual Zabbix configuration:
 ```bash
 # Zabbix Configuration
 ZABBIX_URL=http://zabbix-web:8080
@@ -82,17 +101,27 @@ POSTGRES_PASSWORD=zabbix
 POSTGRES_DB=zabbix
 ```
 
-### 3. Build and Start Services
+### 4. Build and Start Services
 
 #### Windows (PowerShell)
 ```powershell
+# Start the stack
 .\start.ps1
+
+# Stop the stack
+.\stop.ps1
 ```
 
 #### Linux/macOS
 ```bash
-chmod +x start.sh
+# Make scripts executable
+chmod +x start.sh stop.sh
+
+# Start the stack
 ./start.sh
+
+# Stop the stack
+./stop.sh
 ```
 
 #### Manual Start
@@ -113,6 +142,32 @@ docker-compose up -d ollama zabbix-mcp chatbot
 docker-compose up -d open-webui jump-server
 ```
 
+### 5. Stop Services
+
+#### Graceful Shutdown
+```bash
+# Windows
+.\stop.ps1
+
+# Linux/macOS
+./stop.sh
+```
+
+#### Manual Stop Options
+```bash
+# Stop all services
+docker-compose stop
+
+# Stop and remove containers
+docker-compose down
+
+# Stop and remove containers + volumes
+docker-compose down -v
+
+# Complete cleanup (containers, volumes, images)
+docker-compose down -v --rmi all
+```
+
 ## 🌐 Access URLs
 
 Once all services are running:
@@ -124,6 +179,7 @@ Once all services are running:
 | **Open WebUI** | http://localhost:3000 | - |
 | **MCP Server API** | http://localhost:8000 | - |
 | **Ollama API** | http://localhost:11434 | - |
+| **Jump Server** | `docker exec -it jump-server bash` | - |
 
 ## 🤖 Using the Chatbot
 
@@ -211,6 +267,15 @@ Edit `zabbix-mcp-server/config/mcp.json`:
 ./monitor.sh
 ```
 
+#### Stop Services
+```bash
+# Windows
+.\stop.ps1
+
+# Linux/macOS  
+./stop.sh
+```
+
 #### Manual Checks
 ```bash
 # Check all services
@@ -274,6 +339,46 @@ docker stats
 OLLAMA_MODEL=qwen2.5:1.5b-instruct
 ```
 
+## 🔄 Service Lifecycle Management
+
+### Quick Start/Stop Commands
+
+| Platform | Start | Stop | Monitor |
+|----------|-------|------|---------|
+| **Windows** | `.\start.ps1` | `.\stop.ps1` | `.\monitor.ps1` |
+| **Linux/macOS** | `./start.sh` | `./stop.sh` | `./monitor.sh` |
+
+### Service Dependencies
+
+The services start in this order:
+1. **Database** (PostgreSQL)
+2. **Zabbix Server** (depends on database)
+3. **Zabbix Web UI** (depends on server + database)
+4. **Ollama** (AI inference engine)
+5. **Zabbix MCP Server** (depends on Zabbix Web UI)
+6. **Chatbot** (depends on MCP + Ollama)
+7. **Open WebUI** (depends on Ollama)
+8. **Jump Server** (utility container)
+
+### Cleanup Options
+
+```bash
+# Stop services gracefully
+./stop.sh  # or .\stop.ps1
+
+# Remove containers only
+docker-compose down
+
+# Remove containers and volumes (⚠️ data loss)
+docker-compose down -v
+
+# Complete cleanup (⚠️ removes everything)
+docker-compose down -v --rmi all
+
+# Remove only unused Docker resources
+docker system prune
+```
+
 ## 🧪 Development and Testing
 
 ### Using Jump Server
@@ -281,15 +386,39 @@ OLLAMA_MODEL=qwen2.5:1.5b-instruct
 # Access jump server
 docker exec -it jump-server bash
 
+# Verify Python 3.13 installation
+python3.13 /root/verify-python.py
+
+# Run comprehensive service tests
+./test-services.sh
+
 # Test MCP connectivity
 cd /root/mcpdemo
-python test_script.py
+python3.13 test_script.py
 
 # Test Zabbix API directly
 curl -X POST http://zabbix-web:8080/api_jsonrpc.php \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"apiinfo.version","id":1}'
+
+# Test Ollama models
+curl http://ollama:11434/api/tags
+
+# Test individual services
+curl http://chatbot:9000/health
+curl http://zabbix-mcp:8000/health
+
+# Start Python 3.13 interactive session
+python3.13
 ```
+
+### Jump Server Features
+- **Python 3.13**: Latest Python version with all development packages
+- **Development Tools**: Git, Vim, curl, jq, htop, etc.
+- **Node.js**: For JavaScript development
+- **Testing Framework**: pytest, ipython, jupyter
+- **Network Tools**: ping, telnet, netcat for connectivity testing
+- **Code Quality**: black, flake8, mypy for Python code analysis
 
 ### Development Workflow
 ```bash
@@ -334,8 +463,12 @@ curl -X POST http://localhost:9000/chat \
 zabbix-mcp-chat/
 ├── docker-compose.yml          # Main orchestration file
 ├── .env                        # Environment configuration
+├── setup.ps1                   # Windows setup script
+├── setup.sh                    # Linux/macOS setup script
 ├── start.ps1                   # Windows startup script
 ├── start.sh                    # Linux/macOS startup script
+├── stop.ps1                    # Windows stop script
+├── stop.sh                     # Linux/macOS stop script
 ├── monitor.ps1                 # Windows monitoring script
 ├── monitor.sh                  # Linux/macOS monitoring script
 ├── README.md                   # This file
@@ -356,6 +489,9 @@ zabbix-mcp-chat/
 │   └── config/
 │       └── mcp.json            # MCP configuration
 ├── jump-home/                  # Jump server workspace
+│   ├── Dockerfile              # Jump server container (Python 3.13)
+│   ├── test-services.sh        # Service testing script
+│   ├── verify-python.py        # Python 3.13 verification script
 │   ├── app/
 │   │   └── test_script.py      # Testing scripts
 │   └── mcpdemo/

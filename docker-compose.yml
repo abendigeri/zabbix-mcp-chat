@@ -180,20 +180,23 @@ services:
 
       # ---- Jump service (Ubuntu 22.04) ----
   jump-server:
-    image: ubuntu:22.04
+    build:
+      context: ./jump-home
+      dockerfile: Dockerfile
+    image: jump-server:latest
     container_name: jump-server
     hostname: jump-server
-    command: ["/bin/bash", "-c", "apt-get update && apt-get install -y curl jq python3 python3-pip && sleep infinity"]
     tty: true
-
+    stdin_open: true
     ports:
       - "8888:8888"
-
-    stdin_open: true
     networks: [monitor-net]
-    volumes:
-      - ./jump-home:/root
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "echo 'Jump server is running'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 
   chatbot:
